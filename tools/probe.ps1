@@ -39,7 +39,7 @@ param(
 
   # ---- 路径与设备：默认从仓库自身推算，可用参数或环境变量覆盖 ----
   [string]$Adb    = $(if ($env:ADB)    { $env:ADB }    else { 'C:\Android\android-sdk\platform-tools\adb.exe' }),
-  [string]$Serial = $(if ($env:ANDROID_SERIAL) { $env:ANDROID_SERIAL } else { '4EU0222111007420' }),
+  [string]$Serial = $env:ANDROID_SERIAL,   # 留空 = 用唯一一台已连接设备
   [string]$So     = '',   # 默认 <repo>\payload\build\nop_nop_an01p\bin\preload.so
   [string]$Su     = '',   # 默认 <repo>\payload\build\embed\su_daemon_aarch64_pie
   [string]$OutDir = ''    # 默认 <repo>\probe
@@ -51,12 +51,19 @@ $S   = $Serial
 # Some adb servers keep a ghost entry for the serial after a device reboot:
 # `adb devices` lists it but every -s command answers "device not found", while a
 # serial-less command still works because only one device is attached.
-$sa = @('-s', $S)
-$st = (& $adb -s $S get-state 2>&1 | Out-String).Trim()
-if ($st -ne 'device') {
+if ($S) {
+  $sa = @('-s', $S)
+  $st = (& $adb -s $S get-state 2>&1 | Out-String).Trim()
+  if ($st -ne 'device') {
+    $n = @(& $adb devices | Select-String '\sdevice$').Count
+    if ($n -eq 1) { $sa = @(); $S = ''; Write-Host 'adb: serial unusable, using the single attached device' }
+    else { Write-Host "adb: serial unusable, $n devices attached" }
+  }
+} else {
   $n = @(& $adb devices | Select-String '\sdevice$').Count
-  if ($n -eq 1) { $sa = @(); Write-Host 'adb: serial unusable, using the single attached device' }
-  else { Write-Host "adb: serial unusable, $n devices attached" }
+  if ($n -eq 0) { throw 'no adb device attached (set -Serial or $env:ANDROID_SERIAL)' }
+  if ($n -gt 1)  { throw "$n adb devices attached; pass -Serial" }
+  $sa = @()
 }
 if (-not $So)  { $So  = Join-Path $repo 'payload\build\nop_nop_an01p\bin\preload.so' }
 if (-not $Su)  { $Su  = Join-Path $repo 'payload\build\embed\su_daemon_aarch64_pie' }
@@ -188,7 +195,8 @@ for ($a = 1; $a -le $max; $a++) {
   Start-Sleep -Seconds 20
   $up = $false
   for ($i = 0; $i -lt 60; $i++) {
-    $d = (& $adb devices 2>&1 | Select-String $S)
+    if ($S) { $d = (& $adb devices 2>&1 | Select-String $S) }
+    else    { $d = (& $adb devices 2>&1 | Select-String '\sdevice$') }
     if ("$d" -match 'device\s*$') { $up = $true; break }
     Start-Sleep -Seconds 5
   }

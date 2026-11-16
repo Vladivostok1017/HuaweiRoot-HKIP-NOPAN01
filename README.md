@@ -96,11 +96,13 @@ app/          管理器 App（Java，无 AndroidX，手工 aapt2/javac/d8/apksig
 app_demo/     演示 App：让第三方通过 Binder 借 root
 tools/        落地脚本 probe.ps1
 docs/         研究文档
+research/     系统本身的研究材料：内核配置、QEMU 补丁表、gate 反汇编、策略体哈希、三轮报告
 probe/        落地统计（ab_summary.csv）
 ```
 
 目录入口：门的源码与编译说明见 [`payload/README.md`](payload/README.md)，
-管理器的两个页面与协议见 [`app/README.md`](app/README.md)。
+管理器的两个页面与协议见 [`app/README.md`](app/README.md)，
+系统研究与工具见 [`research/README.md`](research/README.md)。
 
 | 文档 | 讲什么 |
 |---|---|
@@ -123,6 +125,10 @@ probe/        落地统计（ab_summary.csv）
 
 **二是系统本身的地图。** 分区表、boot 与 AVB 的字段、erofs + verity 的布局、SELinux 策略体的结构和哈希算法（能自己算出某个 `(src, tgt, cls)` 落在哪个桶），
 这些读出来的东西和 root 无关——它们回答的是"这台机器是怎么组织起来的"。`docs/03`、`docs/04` 记的就是这些。
+
+原始材料放在 [`research/`](research/README.md)：设备的内核配置、把内核镜像补到 QEMU 跑起来的逐条补丁表、
+四个 HKIP gate 的反汇编、avtab 哈希的拟合脚本、以及三轮完整报告。符号、偏移、反汇编都由
+[`research/tooling/kimage.py`](research/tooling/kimage.py) 从 vmlinux 现取，可以自己复核。
 
 ---
 
