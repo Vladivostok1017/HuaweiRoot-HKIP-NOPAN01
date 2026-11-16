@@ -132,6 +132,17 @@ probe/        落地统计（ab_summary.csv）
 
 ---
 
+## 接下来
+
+作者已经停止推进，仓库里留的是完整的可接手状态：哪些已经验证、下一步三件事、改动成本、哪些不要再花时间。
+
+- [`NEXT.md`](NEXT.md) —— 交接文档：现状、下一步、成本、死路清单
+- [`research/notes/soft-reboot-hook.md`](research/notes/soft-reboot-hook.md) —— 最新的能力发现：
+  门在软重启（`restart zygote`）中存活，内核与 init 都不重启，于是得到一次**可自己触发、时机可控的系统启动窗口**。
+  这是"本次开机内生效的模块效果"第一次成立，也是后面所有设想的地基。
+
+---
+
 ## 已知边界
 
 门拿到的是 `uid=0` + 全 capabilities，跑在 `u:r:shell:s0` 这个域里。

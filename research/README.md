@@ -16,6 +16,7 @@
 | `init-domain/` | init 域究竟能做什么，为什么"把进程变成 init 域"不能当常驻形态 |
 | `tooling/` | 从 vmlinux 取符号、翻地址、反汇编、读内嵌数据 |
 | `reports/` | 三轮完整记录：总报告、上游踩过的坑、与上游分支的逐项差异核对 |
+| `notes/` | 时间点笔记。`soft-reboot-hook.md`：门在软重启（`restart zygote`）中存活，于是有了一个可自己触发、时机可控的"准开机窗口" |
 
 ## 关键数字
 
