@@ -143,4 +143,4 @@ probe/        落地统计（ab_summary.csv）
 ## 许可
 
 GNU General Public License v3.0，全文见 [`LICENSE`](LICENSE)。
-上游与参考项目见 [`CREDITS.md`](CREDITS.md)。
+这份工作站在别人的肩膀上，参考与致谢清单（排名不分先后）见 [`CREDITS.md`](CREDITS.md)。
