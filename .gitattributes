@@ -1,0 +1,6 @@
+# 文本统一 LF，只有 PowerShell 脚本保留 CRLF
+* text=auto eol=lf
+*.ps1 text eol=crlf
+*.png binary
+*.webp binary
+*.keystore binary
