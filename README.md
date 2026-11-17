@@ -1,158 +1,159 @@
-# HuaweiRoot-HKIP-NOPAN01
+# CVE-2026-43499 与 SELinux 宽容在华为 Mate 40 RS 上的解决方案与限制
 
-一台锁着 bootloader 的华为 Mate 40 RS，跑 HarmonyOS 4.2 / kernel 5.10.43。
-这个项目让它能执行 `uid=0` 的命令，并且把这件事做成一个你在手机上能直接用的东西。
+目标机型 HUAWEI Mate 40 RS（NOP-AN01P / NOP-AN00），bootloader 锁定，未解锁、未改系统分区。
+本文档描述在这台机器上取得 `uid=0` 执行能力的方案、落地方式，以及为什么 SELinux 侧的"宽容"做不到。
 
-不是刷机包，不是 Magisk 模块，不需要解锁、不需要动 `/system`。
-一次开机打一次洞，之后拔掉数据线，在手机上开终端敲命令；重启后回到原样，再打一次。
-
-用的是 CVE-2026-43499（GhostLock，futex PI 链表上的 UAF）。
+一次开机执行一次漏洞利用，之后可脱离电脑使用；重启后失效，需重新执行。
 
 ---
 
-## 项目里有三样东西
+## 1. 设备与环境
 
-**门（payload）** — 一个被注入到内核上下文里运行的进程，叫 `l5`。
-它不常驻内核，也不改任何内核代码：手上握着一个物理内存任意读写的能力，靠它去改"我是谁"。
-它只做一件事——把某个进程的 cred 改写成 `uid=0`，然后把控制权交出去。
-
-**管理器（App）** — `com.l5.root`。它站在门和用户之间，命令有两条路出去：
-主力是**文件邮箱**（门只认 `/sdcard/Android/data/com.l5.root/files/l5/` 一个目录，App 写命令、读输出，约 0.3–1 秒一条）；
-设备上装了 Shizuku 且已授权时改走 **binder 快通道**（把 `RootExecService` 放进 Shizuku 的特权进程，一条命令一次调用，毫秒级）。
-打开 App 看到的是 KSU 风格的主页（状态、调用者、模块位、Shizuku 状态），底部切到终端就是一台黑底等宽的 shell。
-
-**文档集（docs）** — 写这套东西时撞出来的东西：EL2 那层 HKIP 在哪几个指令上做检查、SELinux 策略体在内存里长什么样、分区和镜像的元数据怎么读。
-每条结论都能指到具体地址或实测日志，不是推测。
-
----
-
-## 用起来是什么样
-
-装上管理器、打一次洞，之后有三种用法：
-
-**在手机上敲命令。** 打开 App → 底部「终端」→ 输入 → 回车。
-输出的第一行通常是：
-
-```
-uid=0(root) gid=2000(shell) groups=2000(shell) context=u:r:shell:s0
-```
-
-**保持一个会话。** 终端右上角可以在「单次」和「会话」之间切。
-会话模式下 `cd`、环境变量、后台任务都留着，跟在电脑上开个 shell 一样。
-
-**让别的 App 用。** 管理器对外是一个 ContentProvider：
-
-```java
-Bundle r = getContentResolver().call(
-    Uri.parse("content://com.l5.root.gateway"), "exec", "id", null);
-String out = r.getString("out");
-```
-
-`app_demo/` 里有一个 12 KB 的演示 App（`com.l5.demo`），干的就是这件事。
-管理器会把调用者记在主页的「超级用户」里——谁是哪个包、什么时候来的、要了什么。
+| 项 | 值 |
+|---|---|
+| 机型 | HUAWEI Mate 40 RS（NOP-AN01P / NOP-AN00） |
+| 系统 | HarmonyOS 4.2（Android 12） |
+| 内核 | 5.10.43，aarch64 |
+| bootloader | 锁定 |
+| `/system` | erofs + verity |
+| SELinux | enforcing；`CONFIG_SECURITY_SELINUX_DEVELOP` 未开启 |
+| 内核模块 | `MODULE_SIG_FORCE=y`，`# CONFIG_KPROBES is not set` |
+| 漏洞 | CVE-2026-43499（GhostLock，futex PI 等待链表上的 UAF） |
 
 ---
 
-## 怎么开始
+## 2. 解决方案
+
+漏洞利用分四步，前两步是取得内核读写原语，后两步是把自己的身份改成 `uid=0` 并让系统承认这个身份。
+
+| 步骤 | 目标 | 手段 |
+|---|---|---|
+| 1 | 在内核中取得可控调用点 | `select`/`pselect` 等待队列上的 UAF → 替换 `ashmem` 的 `file_operations`（CFI 劫持） |
+| 2 | 任意物理内存读写 | 从 `pipe_buffer` 的页指针走出，绕开 `mm` 按物理地址读写 |
+| 3 | 通过 EL2 的 uid-0 校验 | hypervisor call（`ROWM_WRITE_8`，`0xC6001054`）写 EL2 维护的 uid-0 位图；一次落地 1 字节 = 8 个连续 tid |
+| 4 | 改写凭据 | 在物理内存中改写 `cred` 的 uid / gid / capabilities，返回用户态 |
+
+第 3 步是本机与上游 Linux 的关键差别：华为在 EL2 上有一层 HKIP/HHEE，uid 0 的任务要在
+`copy_process` 与 `prepare_creds` 各过一道校验，判定依据是 EL2 里的位图，而不是内核中 `cap_capable` 的返回值。
+位图无法由 EL1 直接写入，只能通过内核自身的 hypervisor call 更新。检查点偏移与反汇编见 `docs/01-hkip.md` 与 `research/hkip/`。
+
+扫描完成后，承载服务循环的进程（构建产物 `payload/build/.../preload.so`，注入后运行在管理器进程内，
+早期笔记中称其为"门"）**自身保持 `uid=2000`**，从而继续读写 `/sdcard` 上的通信目录；
+每条请求 fork 一个子进程、只改写该子进程的 cred、回读 EL2 位确认后再放行。
+因此同一 boot 内可反复执行（实测连续 5 次均为 `uid=0(root)`），无需二次利用漏洞。
+
+---
+
+## 3. SELinux 宽容的可行性结论
+
+目标是关闭 SELinux 强制模式或改写策略，使 `mount`、块设备读取、跨域访问可用。三条路径均已实测或静态确认为不可达：
+
+| 路径 | 结论 | 依据 |
+|---|---|---|
+| 写 `selinux_state.enforcing = 0` | 可写但无效 | 编译时未开 `CONFIG_SECURITY_SELINUX_DEVELOP`，判定为常量；内核中 `get_selinux_enforcing` 被编译成 `mov w0, #1` |
+| 改写策略体 / avtab | 不可达 | 策略体与 avtab 位于 EL2 只读内存池（`selinux_pool` / `selinux_prot_pool`）；`HKIP_HVC_RO_MOD_UNREGISTER` 只接受 EL2 已注册的精确 `(va, size)`，推测范围会导致设备复位（实测两次） |
+| AVC 缓存投毒 | 无效 | 583 次投毒后判定结果仍为 `-13` |
+
+因此实际形态是：**在 `u:r:shell:s0` 域内以 `uid=0` + 全 capabilities 运行**。
+DAC 层面畅通（可读写 root 属主文件、可进入 `/data/system`），SELinux 判定照旧。
+这条边界的完整清单见 `docs/06-capability-matrix.md`。
+
+---
+
+## 4. 项目路径
+
+```
+payload/            内核侧载荷：注入镜像、root 服务进程、本机偏移表（C，NDK clang 构建）
+  src/targets/nop_nop_an01p/target.h   本机全部内核偏移
+  build.ps1                           产出 preload.so 与 su_daemon
+app/                管理器 App：主页 + 终端、文件邮箱客户端、Shizuku binder 客户端、对外 Binder 提供方
+app_demo/           第三方调用示例（com.l5.demo）
+tools/probe.ps1     漏洞利用执行脚本（重启 → 等待稳定 → 注入 → 判定落地）
+docs/               方案文档：HKIP、漏洞链、SELinux、系统镜像、协议、能力矩阵
+research/           系统本身的研究材料与工具
+  system/           设备内核配置全文
+  qemu/             将内核镜像静态补丁至可在 QEMU 运行到用户态的补丁表
+  hkip/             HKIP 检查点、上下文切换、策略加载函数反汇编
+  selinux/          策略体布局、avtab 桶哈希拟合、AVC 结论
+  init-domain/      init 域能力边界与 mount 可行性
+  tooling/          kimage.py：符号 / 地址 / 反汇编 / 读内核数据
+  reports/          三轮完整报告
+probe/              执行记录（ab_summary.csv）
+NEXT.md             交接：已验证项、待验证项、改动成本
+```
+
+载荷源码说明见 `payload/README.md`，管理器说明见 `app/README.md`，研究材料索引见 `research/README.md`。
+
+---
+
+## 5. 构建与执行
 
 ```powershell
-# 1) 编译门和管理器
+# 1) 构建载荷与管理器
 .\payload\build.ps1
 .\app\build.ps1
 
-# 2) 打洞。每次尝试都会重启设备，命中率大约 1/6，所以给 6 次机会
+# 2) 执行漏洞利用：每次尝试会重启设备，命中率约 1/6，故给 6 次机会
 .\tools\probe.ps1 -settle fixed -fixedSeconds 60 -max 6 -tag run1 `
   -lean -serve -noRetry -reqPrefix "srvroot" -launchPkg com.l5.root -console
 
-# 3) 脚本打出 "e2e status written" 就是落地了。拔线，开 App
+# 3) 输出 "e2e status written" 即落地成功；之后可断开数据线，在 App 内操作
 ```
 
-落地之后屏幕上会留下几行 `[*]` 日志，`probe/ab_summary.csv` 记着每次尝试的结果。
+落地后验证：
+
+```
+$ id
+uid=0(root) gid=2000(shell) groups=2000(shell) context=u:r:shell:s0
+```
+
+载荷镜像存在尺寸上限 161,144 字节（当前构建 158,808 字节）。
 
 ---
 
-## 它是怎么成立的
+## 6. 能力与限制
 
-一句话：华为在 EL2 上加了一层自己的完整性保护（HKIP/HHEE），普通提权手法到它面前全部作废，所以要绕开的是"它允许谁是 root"这个判定，而不是"root 该有什么权限"。
-
-链条有四段：
-
-1. **进内核** — `select`/`pselect` 的等待队列上有一个可用的 UAF，用它把 `ashmem` 的 `file_operations` 换成自己的，拿到一个可控的 CFI 调用点。
-2. **拿物理内存读写** — 从 `pipe_buffer` 的页指针走出来，绕开 `mm` 直接按物理地址读写字。
-3. **问 HKIP 要许可** — EL2 维护一个 uid-0 位图。通过 hypervisor call 把目标 tid 的位打上（一次调用写 8 个 tid），这个进程之后就"被承认"是 root。
-4. **改 cred** — 在物理内存里把 `cred` 结构里的 uid/gid/capabilities 写掉，然后正常返回用户态。
-
-门进程自己留在 `uid=2000`（这是它还能读写 `/sdcard` 邮箱的原因），被它放出去的子进程才是 `uid=0`。
-所以门可以反复用，一次开机里想开多少个 root 进程就开多少个——只有第一次需要打洞。
-
-为什么别的路都不通，`docs/02` 里逐条记了：`MODULE_SIG_FORCE=y` 加没有 kprobes，KernelSU 那套内核模块加载不了；`/system` 是 erofs + verity；SELinux 策略体和 avtab 都在 EL2 只读的内存池里，改不动。
-
----
-
-## 目录
-
-```
-payload/      门：注入用的 .so、root 服务进程、本机偏移表（C，NDK clang 直接编）
-app/          管理器 App（Java，无 AndroidX；aidl + aapt2/javac/d8/apksigner 手工构建；含 Shizuku 快通道）
-app_demo/     演示 App：让第三方通过 Binder 借 root
-tools/        落地脚本 probe.ps1
-docs/         研究文档
-research/     系统本身的研究材料：内核配置、QEMU 补丁表、gate 反汇编、策略体哈希、三轮报告
-probe/        落地统计（ab_summary.csv）
-```
-
-目录入口：门的源码与编译说明见 [`payload/README.md`](payload/README.md)，
-管理器的两个页面与协议见 [`app/README.md`](app/README.md)，
-系统研究与工具见 [`research/README.md`](research/README.md)。
-
-| 文档 | 讲什么 |
+| 可用 | 不可用 |
 |---|---|
-| [`docs/01-hkip.md`](docs/01-hkip.md) | HKIP/HHEE：`copy_process` 和 `prepare_creds` 上的检查点、`pid==0` 短路、uid 位图与 `ROWM_WRITE_8` 的语义 |
-| [`docs/02-exploit-chain.md`](docs/02-exploit-chain.md) | 四段链条、每段的判据、落地率、试过但走不通的路 |
-| [`docs/03-selinux.md`](docs/03-selinux.md) | 策略体与 avtab 的内存布局、桶哈希（7/7 复现）、prmem 池、为什么 AVC 投毒没用 |
-| [`docs/04-system-image.md`](docs/04-system-image.md) | 分区枚举、块设备许可、boot/AVB 与压缩镜像的字段表 |
-| [`docs/05-manager-protocol.md`](docs/05-manager-protocol.md) | 邮箱协议、全部动词、Binder 网关、会话模式 |
-| [`docs/06-capability-matrix.md`](docs/06-capability-matrix.md) | 能力对象：门 / 终端 / 网关 / 文档集 |
+| 以 `uid=0` + 全 capabilities 执行任意 shell 命令，同一 boot 内不限次数 | 关闭 SELinux 强制模式或改写策略（见第 3 节） |
+| 读写 root 属主文件、进入 `/data/system` 等 DAC 受限路径 | `mount` / overlay / bind 挂载（在能力检查之前即被域策略拒绝） |
+| 会话模式保留 `cd`、环境变量、后台任务 | 读取 `/dev/block` 分区内容（shell 域对 `blk_file` 仅有 `getattr`） |
+| 第三方 App 通过 `content://com.l5.root.gateway` 请求代执行 | 加载内核模块（`MODULE_SIG_FORCE=y`，无 kprobes） |
+| 载荷在 `restart zygote` 中存活，提供一次可控的系统启动窗口 | 跨真实重启保持状态（无 `/data/adb`，无早期时序） |
 
 ---
 
-## 研究对象不止是 root
+## 7. 研究产出
 
-这套东西真正的产出是两份"地图"。
+除执行通道外，本仓库包含两部分针对这台机器本身的测量结果。
 
-**一是保护层的地图。** HKIP/HHEE 闭源、公开分析极少，而且和上游 Linux、AOSP SELinux、Magisk/KernelSU 的前提都不一样——
-它不认识 `cap_capable` 的返回值，只认自己在 EL2 里维护的位图；uid 0 的任务要在 `copy_process` 和 `prepare_creds` 各过一道，没过就让设备复位。
-哪几条指令上做检查、哪个条件能短路、位图的粒度是多少、hypervisor call 的编号和参数格式，`docs/01` 全部落到指令级。
+**保护层。** HKIP/HHEE 为闭源实现，行为与上游 Linux、AOSP SELinux、Magisk/KernelSU 的假设均不兼容。
+本仓库给出其检查点所在的精确符号与指令、`pid==0` 短路条件、位图粒度与 hypervisor call 的参数格式，
+并附上把同一内核镜像补丁至可在 QEMU 运行到用户态的逐条补丁表（每个补丁先断言原始字节）。
 
-**二是系统本身的地图。** 分区表、boot 与 AVB 的字段、erofs + verity 的布局、SELinux 策略体的结构和哈希算法（能自己算出某个 `(src, tgt, cls)` 落在哪个桶），
-这些读出来的东西和 root 无关——它们回答的是"这台机器是怎么组织起来的"。`docs/03`、`docs/04` 记的就是这些。
-
-原始材料放在 [`research/`](research/README.md)：设备的内核配置、把内核镜像补到 QEMU 跑起来的逐条补丁表、
-四个 HKIP gate 的反汇编、avtab 哈希的拟合脚本、以及三轮完整报告。符号、偏移、反汇编都由
-[`research/tooling/kimage.py`](research/tooling/kimage.py) 从 vmlinux 现取，可以自己复核。
+**系统结构。** 分区枚举、boot 与 AVB 字段布局、erofs + verity、SELinux 策略体的内存布局与 avtab 桶哈希
+（可自行复算某个 `(src, tgt, cls)` 的落桶）。这些结论与取得 root 无关。
+符号、偏移与反汇编均由 `research/tooling/kimage.py` 从 vmlinux 现取，可复核。
 
 ---
 
-## 接下来
+## 8. 文档
 
-作者已经停止推进，仓库里留的是完整的可接手状态：哪些已经验证、下一步三件事、改动成本、哪些不要再花时间。
-
-- [`NEXT.md`](NEXT.md) —— 交接文档：现状、下一步、成本、死路清单
-- [`research/notes/soft-reboot-hook.md`](research/notes/soft-reboot-hook.md) —— 最新的能力发现：
-  门在软重启（`restart zygote`）中存活，内核与 init 都不重启，于是得到一次**可自己触发、时机可控的系统启动窗口**。
-  这是"本次开机内生效的模块效果"第一次成立，也是后面所有设想的地基。
-
----
-
-## 已知边界
-
-门拿到的是 `uid=0` + 全 capabilities，跑在 `u:r:shell:s0` 这个域里。
-所以 DAC 层面畅通（能读写 root 属主的文件、能进 `/data/system`），但 SELinux 判定照旧——`mount` 在能力检查之前就被拒，`/dev/block` 读不出分区内容，别的 App 的私有数据还是看不到。
-重启后一切回到原样。
+| 文档 | 内容 |
+|---|---|
+| [`docs/01-hkip.md`](docs/01-hkip.md) | HKIP/HHEE 检查点、`pid==0` 短路、uid 位图与 `ROWM_WRITE_8` 语义 |
+| [`docs/02-exploit-chain.md`](docs/02-exploit-chain.md) | 漏洞链各阶段与判定条件、落地率、已排除路径 |
+| [`docs/03-selinux.md`](docs/03-selinux.md) | 策略体与 avtab 内存布局、桶哈希复现、prmem 池、AVC 投毒为何无效 |
+| [`docs/04-system-image.md`](docs/04-system-image.md) | 分区枚举、块设备许可、boot/AVB 与压缩镜像字段表 |
+| [`docs/05-manager-protocol.md`](docs/05-manager-protocol.md) | 文件邮箱协议、全部动词、Binder 网关、Shizuku 快通道 |
+| [`docs/06-capability-matrix.md`](docs/06-capability-matrix.md) | 能力对象与逐条实测边界 |
+| [`research/README.md`](research/README.md) | 系统研究材料索引与关键偏移表 |
+| [`research/notes/soft-reboot-hook.md`](research/notes/soft-reboot-hook.md) | 载荷在软重启中存活，及其支撑的"本次开机内生效"形态 |
+| [`NEXT.md`](NEXT.md) | 交接文档：已验证项、下一阶段任务、改动成本 |
 
 ---
 
-## 许可
+## 9. 参考与许可
 
-GNU General Public License v3.0，全文见 [`LICENSE`](LICENSE)。
-这份工作站在别人的肩膀上，参考与致谢清单（排名不分先后）见 [`CREDITS.md`](CREDITS.md)。
+外部来源见 [`CREDITS.md`](CREDITS.md)，排名不分先后。
+自有代码以 **GNU GPL v3.0** 发布，全文见 [`LICENSE`](LICENSE)。
