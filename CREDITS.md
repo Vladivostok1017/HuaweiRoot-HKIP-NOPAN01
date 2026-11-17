@@ -12,7 +12,9 @@
 
 ## 其他参考
 
-KernelSU / SukiSU / ReSukiSU（管理器形态）、Shizuku（自举高权限通道）、Termux（终端交互）、AOSP sepolicy（`avtab` / `avc` / `sidtab` 结构）。
+KernelSU / SukiSU / ReSukiSU（管理器形态）、Termux（终端交互）、AOSP sepolicy（`avtab` / `avc` / `sidtab` 结构）。
+
+**Shizuku** —— 直接使用官方 SDK `dev.rikka.shizuku:{api,provider,shared}:13.1.5`：App 把 `RootExecService` 放进它的特权进程，命令从文件邮箱提到毫秒级 binder；它"在手机上自举一个高权限通道"的思路也是这台机器离线可用的前提。
 
 ## 数据来源
 

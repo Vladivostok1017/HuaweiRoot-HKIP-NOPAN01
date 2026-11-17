@@ -14,10 +14,25 @@
 | 会话 shell（保留 `cd`/环境变量/后台任务） | 可用 | `shnew` / `shsend` / `shout` |
 | 第三方 App 通过 Binder 借 root | 可用 | `app_demo`（`com.l5.demo`）→ `uid=0(root)` |
 | 门进程在软重启（`restart zygote`）中存活 | 已确认 | [`research/notes/soft-reboot-hook.md`](research/notes/soft-reboot-hook.md) |
+| Shizuku binder 快通道（毫秒级执行） | 构建通过，**未上机验证** | `app/build/l5root.apk` = 41,363 B；见 [`docs/05`](docs/05-manager-protocol.md) §5 |
 
 ---
 
-## 二、下一步：三件事，按投入产出排序
+## 二、下一步：四件事，按投入产出排序
+
+### 0. 把 Shizuku 快通道验证掉（设备回来后第一件事）
+
+代码已经齐了（`ShizukuBridge` / `RootExecService` / `IRootExec.aidl` / 官方 SDK 13.1.5），缺的只是上机：
+
+```
+装 Shizuku → 用门执行它的启动脚本（或 adb 拉起） → 「Shizuku 授权」 → 「接入 Shizuku」
+→ 终端跑 id，看返回是毫秒级还是 0.3 s
+```
+
+判断依据：`ShizukuBridge.text()` 应显示 `v13 uid=2000 已授权`（adb 拉起）或 `uid=0`（root 拉起）；
+终端在 `serviceReady()` 为真时走 binder，否则自动回落文件邮箱。
+
+顺带一件小事：门侧的请求轮询换成 `inotify`，能把文件邮箱这条路从 ~0.3 s 压到接近 binder（改动很小，收益在没装 Shizuku 的场景）。
 
 ### 1. 把「软重启钩子」打通（最小、最值钱）
 

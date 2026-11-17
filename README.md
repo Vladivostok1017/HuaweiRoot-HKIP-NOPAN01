@@ -16,9 +16,10 @@
 它不常驻内核，也不改任何内核代码：手上握着一个物理内存任意读写的能力，靠它去改"我是谁"。
 它只做一件事——把某个进程的 cred 改写成 `uid=0`，然后把控制权交出去。
 
-**管理器（App）** — `com.l5.root`。它站在门和用户之间：
-门只认一个邮箱目录（`/sdcard/Android/data/com.l5.root/files/l5/`），App 往里写命令、读出结果。
-打开 App 看到的是 KSU 风格的主页（状态、调用者、模块位），底部切到终端就是一台黑底等宽的 shell。
+**管理器（App）** — `com.l5.root`。它站在门和用户之间，命令有两条路出去：
+主力是**文件邮箱**（门只认 `/sdcard/Android/data/com.l5.root/files/l5/` 一个目录，App 写命令、读输出，约 0.3–1 秒一条）；
+设备上装了 Shizuku 且已授权时改走 **binder 快通道**（把 `RootExecService` 放进 Shizuku 的特权进程，一条命令一次调用，毫秒级）。
+打开 App 看到的是 KSU 风格的主页（状态、调用者、模块位、Shizuku 状态），底部切到终端就是一台黑底等宽的 shell。
 
 **文档集（docs）** — 写这套东西时撞出来的东西：EL2 那层 HKIP 在哪几个指令上做检查、SELinux 策略体在内存里长什么样、分区和镜像的元数据怎么读。
 每条结论都能指到具体地址或实测日志，不是推测。
@@ -92,7 +93,7 @@ String out = r.getString("out");
 
 ```
 payload/      门：注入用的 .so、root 服务进程、本机偏移表（C，NDK clang 直接编）
-app/          管理器 App（Java，无 AndroidX，手工 aapt2/javac/d8/apksigner 构建）
+app/          管理器 App（Java，无 AndroidX；aidl + aapt2/javac/d8/apksigner 手工构建；含 Shizuku 快通道）
 app_demo/     演示 App：让第三方通过 Binder 借 root
 tools/        落地脚本 probe.ps1
 docs/         研究文档

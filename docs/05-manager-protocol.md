@@ -69,7 +69,35 @@ String out = r.getString("out");   // r.getInt("code") == 0 表示成功
   `IllegalArgumentException: Unknown authority`。管理器必须处于运行状态。
 - 演示调用方：`app_demo/`（`com.l5.demo`）。
 
-## 5. 会话模式（保留上下文）
+## 5. Binder 快通道（Shizuku）
+
+文件邮箱每条约 0.3–1 s（写文件 → 门轮询 → 读文件），慢在轮询。Shizuku 给了一条直路：
+把**自己的一段代码**塞进 Shizuku 维护的特权进程里常驻，之后一条命令就是一次 binder 调用。
+
+```
+MainActivity ──bind user service──> Shizuku 服务端（uid 2000 或 0）
+                                        └── RootExecService（IRootExec.Stub）
+                                             exec(cmd) → /system/bin/sh -c cmd → 一个字符串
+```
+
+| 部分 | 文件 | 说明 |
+|---|---|---|
+| 接口 | `app/src/com/l5/root/IRootExec.aidl` | `exec(cmd)`=1、`uid()`=2、`secontext()`=3、`destroy()`=`16777114`（Shizuku 保留码） |
+| 服务实现 | `app/src/com/l5/root/RootExecService.java` | 无参构造（Shizuku 要求）、`destroy()` 退出进程、只碰 `ProcessBuilder` |
+| 客户端 | `app/src/com/l5/root/ShizukuBridge.java` | binder 到达/死亡监听、`requestPermission`、`bindUserService` / `unbind` |
+| 提供方 | manifest 的 `rikka.shizuku.ShizukuProvider` | authority `com.l5.root.shizuku`、需 `INTERACT_ACROSS_USERS_FULL` |
+
+调用的特权级别由**谁启动的 Shizuku**决定，不由我们决定：
+
+- Shizuku 由 adb 拉起 ⇒ 该进程 `uid=2000`（shell），能 `pm`/`am`/`settings`/`appops`，不能 `mount`、不能读 `/data/misc`；
+- Shizuku 由 root 拉起 ⇒ `uid=0`，但域仍是 shell，所以能力上限和门自己放出去的子进程一样。
+
+客户端的选择逻辑：`ShizukuBridge.serviceReady()` 为真就走快通道，否则回落文件邮箱。
+两个通道最终都是"root 身份执行 + 取回输出"，区别只有延迟和前提条件。
+
+> 状态：构建通过（APK 41,363 B，`aapt2` 确认组件齐全），**端到端尚未上机验证**——需要设备在线时装 Shizuku、用门执行它的启动脚本、授权、再点「接入 Shizuku」，最后用 `id` 看是否毫秒返回。
+
+## 6. 会话模式（保留上下文）
 
 `srvroot` 每条命令都是新的 `sh -c`，没有上下文。需要 `cd`/`export` 时用会话：
 
@@ -85,7 +113,7 @@ shout <next>
 
 终端页的「会话 / 单次」开关就是切这两个模式。
 
-## 6. 安全边界（写进设计的部分）
+## 7. 安全边界（写进设计的部分）
 
 - 门**不改自己的身份**（否则 `/sdcard` 的 FUSE 视图立刻失效，通道变聋）；
 - 任何新任务在被放行前都要**回读 EL2 位**，没位就 kill，绝不制造"无位 uid-0 任务"；

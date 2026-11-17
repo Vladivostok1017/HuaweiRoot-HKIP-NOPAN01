@@ -13,6 +13,8 @@
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
+    <!-- Shizuku 客户端：服务端以 shell/root 身份把 binder 投递进这个 provider -->
+    <uses-permission android:name="moe.shizuku.manager.permission.API_V23" />
 
     <!-- 供其它 App 调用的门：content://com.l5.root.gateway -->
     <permission
@@ -36,5 +38,18 @@
             android:authorities="com.l5.root.gateway"
             android:exported="true"
             android:readPermission="com.l5.root.permission.EXEC"
-            android:writePermission="com.l5.root.permission.EXEC" />    </application>
+            android:writePermission="com.l5.root.permission.EXEC" />
+        <provider
+            android:name="rikka.shizuku.ShizukuProvider"
+            android:authorities="com.l5.root.shizuku"
+            android:multiprocess="false"
+            android:exported="true"
+            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
+        <meta-data
+            android:name="moe.shizuku.client.V3_SUPPORT"
+            android:value="true" />
+        <service
+            android:name=".RootExecService"
+            android:exported="false" />
+    </application>
 </manifest>

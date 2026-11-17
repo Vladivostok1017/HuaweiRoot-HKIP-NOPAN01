@@ -135,6 +135,7 @@ public class MainActivity extends Activity {
             want = it.getStringExtra("page");
         }
         showPage("term".equals(want));
+        ShizukuBridge.init(this);
         refresh();
     }
 
@@ -183,6 +184,22 @@ public class MainActivity extends Activity {
         row.addView(right, new LinearLayout.LayoutParams(0,
                 ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         col.addView(row);
+
+        LinearLayout szRow = new LinearLayout(this);
+        szRow.setOrientation(LinearLayout.HORIZONTAL);
+        szRow.addView(termButton("Shizuku 授权", new View.OnClickListener() {
+            public void onClick(View v) {
+                ShizukuBridge.requestPermission(MainActivity.this);
+                refresh();
+            }
+        }), new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        szRow.addView(termButton("接入 Shizuku", new View.OnClickListener() {
+            public void onClick(View v) {
+                ShizukuBridge.bind(MainActivity.this);
+                refresh();
+            }
+        }), new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        col.addView(szRow);
 
         infoCard = rounded(WHITE, 18);
         infoCard.setPadding(dp(18), dp(6), dp(18), dp(6));
@@ -384,6 +401,16 @@ public class MainActivity extends Activity {
     private void run(final String cmd) {
         showPage(true);
         termAppend(TERM_PROMPT, "$ " + cmd + "\n");
+        if (ShizukuBridge.serviceReady()) {
+            String quick = ShizukuBridge.exec(cmd);
+            if (quick != null) {
+                termAppend(TERM_FG, quick);
+                if (stateLine != null) {
+                    stateLine.setText(quick.contains("uid=0") ? "工作中" : "已连接");
+                }
+                return;
+            }
+        }
         new Thread(new Runnable() {
             public void run() {
                 final StringBuilder sb = new StringBuilder();
@@ -587,6 +614,7 @@ public class MainActivity extends Activity {
         addInfo("系统指纹", Build.FINGERPRINT);
         addInfo("SELinux 状态", selinuxState());
         addInfo("Seccomp 状态", seccompState());
+        addInfo("Shizuku", ShizukuBridge.text());
     }
 
     private static String field(String blob, String key) {

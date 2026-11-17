@@ -36,10 +36,25 @@ $d8     = Join-Path $btD 'd8.bat'
 $javac  = Join-Path $jdk8 'bin\javac.exe'
 $manifest = Join-Path $root 'AndroidManifest.xml'
 
+# ---- aidl: our own user-service interface (Shizuku runs it in a privileged process)
+$genDir = Join-Path $out 'gen'
+New-Item -ItemType Directory -Force -Path $genDir | Out-Null
+$aidlTool = Join-Path $btA 'aidl.exe'
+$aidlFiles = @(Get-ChildItem (Join-Path $root 'src') -Recurse -Filter *.aidl |
+               ForEach-Object { $_.FullName })
+foreach ($a in $aidlFiles) {
+  & $aidlTool -o $genDir -I (Join-Path $root 'src') $a
+  if ($LASTEXITCODE -ne 0) { throw ("aidl failed: " + $a) }
+}
+
 $srcs = @(Get-ChildItem (Join-Path $root 'src') -Recurse -Filter *.java |
           ForEach-Object { $_.FullName })
+$srcs += @(Get-ChildItem $genDir -Recurse -Filter *.java | ForEach-Object { $_.FullName })
 if ($srcs.Count -eq 0) { throw 'no java sources' }
-Write-Host ("sources: {0}" -f $srcs.Count)
+# ---- official Shizuku client jars (api / provider / shared 13.1.5)
+$jars = @(Get-ChildItem (Join-Path $root 'libs') -Filter *.jar |
+          ForEach-Object { $_.FullName })
+Write-Host ("sources: {0}  shizuku-jars: {1}" -f $srcs.Count, $jars.Count)
 
 Write-Host '=== 1/6 aapt2 link ==='
 $unsigned = Join-Path $out 'app-unsigned.apk'
@@ -48,14 +63,14 @@ if ($LASTEXITCODE -ne 0) { throw 'aapt2 link failed' }
 
 Write-Host '=== 2/6 javac 8 (UTF-8) ==='
 $javacArgs = @('-source', '8', '-target', '8', '-encoding', 'UTF-8', '-nowarn',
-               '-classpath', $plat, '-d', $classesDir) + $srcs
+               '-classpath', ($plat + ';' + ($jars -join ';')), '-d', $classesDir) + $srcs
 & $javac @javacArgs
 if ($LASTEXITCODE -ne 0) { throw 'javac failed' }
 
 Write-Host '=== 3/6 d8 (build-tools 31 on JDK 8) ==='
 $classFiles = @(Get-ChildItem $classesDir -Recurse -Filter *.class |
                 ForEach-Object { $_.FullName })
-$d8Args = @('--lib', $plat, '--min-api', '31', '--output', $dexDir) + $classFiles
+$d8Args = @('--lib', $plat, '--min-api', '31', '--output', $dexDir) + $classFiles + $jars
 & $d8 @d8Args
 if ($LASTEXITCODE -ne 0) { throw 'd8 failed' }
 $dex = Join-Path $dexDir 'classes.dex'
